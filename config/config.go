@@ -1296,6 +1296,13 @@ func SaveAgentModel(projectName, model string) error {
 	return patchProjectAgentOption(projectName, "model", model)
 }
 
+// SaveAgentRole persists the selected local Codex role for a project's agent.
+func SaveAgentRole(projectName, role string) error {
+	configMu.Lock()
+	defer configMu.Unlock()
+	return patchProjectAgentOption(projectName, "agent_role", role)
+}
+
 // AddProviderToConfig adds a provider to a project's agent config and saves.
 func AddProviderToConfig(projectName string, provider ProviderConfig) error {
 	configMu.Lock()

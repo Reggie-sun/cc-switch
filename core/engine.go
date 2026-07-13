@@ -350,6 +350,7 @@ type Engine struct {
 	providerRefsSaveFunc    func(refs []string) error
 	listGlobalProvidersFunc func(agentType string) ([]ProviderConfig, error)
 	modelSaveFunc           func(model string) error
+	roleSaveFunc            func(role string) error
 
 	ttsSaveFunc func(mode string) error
 
@@ -1045,6 +1046,8 @@ func (e *Engine) SetListGlobalProvidersFunc(fn func(agentType string) ([]Provide
 func (e *Engine) SetModelSaveFunc(fn func(model string) error) {
 	e.modelSaveFunc = fn
 }
+
+func (e *Engine) SetRoleSaveFunc(fn func(role string) error) { e.roleSaveFunc = fn }
 
 // AddPlatform appends a platform to the engine after construction.
 // The platform is started and wired during the next Engine.Start call,
@@ -6414,6 +6417,8 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 		e.cmdAllow(p, msg, args)
 	case "model":
 		e.cmdModel(p, msg, args)
+	case "role":
+		e.cmdRole(p, msg, args)
 	case "reasoning":
 		e.cmdReasoning(p, msg, args)
 	case "mode":
@@ -9544,6 +9549,52 @@ func (e *Engine) cmdModel(p Platform, msg *Message, args []string) {
 	sessions.Save()
 
 	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgModelChanged, target))
+}
+
+func (e *Engine) cmdRole(p Platform, msg *Message, args []string) {
+	agent, sessions, interactiveKey, err := e.commandContext(p, msg)
+	if err != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
+		return
+	}
+	switcher, ok := agent.(RoleSwitcher)
+	if !ok {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgRoleNotSupported))
+		return
+	}
+	roles := switcher.AvailableRoles()
+	if len(args) == 0 {
+		var sb strings.Builder
+		sb.WriteString("Available roles:\n")
+		for i, role := range roles {
+			sb.WriteString(fmt.Sprintf("%d. %s — %s\n", i+1, role.Name, role.Description))
+		}
+		sb.WriteString("\n" + e.i18n.T(MsgRoleUsage))
+		e.reply(p, msg.ReplyCtx, sb.String())
+		return
+	}
+	target, ok := parseModelSwitchArgs(args)
+	if !ok {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgRoleUsage))
+		return
+	}
+	if i, parseErr := strconv.Atoi(target); parseErr == nil && i >= 1 && i <= len(roles) {
+		target = roles[i-1].Name
+	}
+	if e.roleSaveFunc != nil {
+		if err := e.roleSaveFunc(target); err != nil {
+			e.reply(p, msg.ReplyCtx, err.Error())
+			return
+		}
+	}
+	if err := switcher.SetRole(target); err != nil {
+		e.reply(p, msg.ReplyCtx, err.Error())
+		return
+	}
+	e.cleanupInteractiveState(interactiveKey)
+	sessions.NewSession(msg.SessionKey, "")
+	sessions.Save()
+	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgRoleChanged, switcher.GetRole()))
 }
 
 // resolveModelAlias resolves a user-supplied string to a model name.

@@ -33,22 +33,25 @@ func init() {
 //   - "full-auto": --sandbox workspace-write + approval_policy=never
 //   - "yolo":      --dangerously-bypass-approvals-and-sandbox
 type Agent struct {
-	workDir         string
-	model           string
-	reasoningEffort string
-	mode            string // "suggest" | "auto-edit" | "full-auto" | "yolo"
-	backend         string // "exec" | "app_server"
-	appServerURL    string
-	codexHome       string
-	systemPrompt    string
-	appendPrompt    string
-	cmd             string   // CLI binary name, default "codex"
-	cliExtraArgs    []string // extra args parsed from cmd after the binary
-	providers       []core.ProviderConfig
-	activeIdx       int      // -1 = no provider set
-	configEnv       []string // env vars from [projects.agent.options.env] — persists across SetSessionEnv calls
-	sessionEnv      []string
-	mu              sync.RWMutex
+	workDir          string
+	model            string
+	reasoningEffort  string
+	mode             string // "suggest" | "auto-edit" | "full-auto" | "yolo"
+	backend          string // "exec" | "app_server"
+	appServerURL     string
+	codexHome        string
+	systemPrompt     string
+	appendPrompt     string
+	baseAppendPrompt string
+	roles            []roleProfile
+	role             string
+	cmd              string   // CLI binary name, default "codex"
+	cliExtraArgs     []string // extra args parsed from cmd after the binary
+	providers        []core.ProviderConfig
+	activeIdx        int      // -1 = no provider set
+	configEnv        []string // env vars from [projects.agent.options.env] — persists across SetSessionEnv calls
+	sessionEnv       []string
+	mu               sync.RWMutex
 }
 
 func New(opts map[string]any) (core.Agent, error) {
@@ -91,21 +94,63 @@ func New(opts map[string]any) (core.Agent, error) {
 		}
 	}
 
-	return &Agent{
-		workDir:         workDir,
-		model:           model,
-		reasoningEffort: normalizeReasoningEffort(reasoningEffort),
-		mode:            mode,
-		backend:         backend,
-		appServerURL:    appServerURL,
-		codexHome:       strings.TrimSpace(codexHome),
-		systemPrompt:    strings.TrimSpace(systemPrompt),
-		appendPrompt:    strings.TrimSpace(appendPrompt),
-		cmd:             cmd,
-		cliExtraArgs:    cliExtraArgs,
-		configEnv:       configEnv,
-		activeIdx:       -1,
-	}, nil
+	agent := &Agent{
+		workDir:          workDir,
+		model:            model,
+		reasoningEffort:  normalizeReasoningEffort(reasoningEffort),
+		mode:             mode,
+		backend:          backend,
+		appServerURL:     appServerURL,
+		codexHome:        strings.TrimSpace(codexHome),
+		systemPrompt:     strings.TrimSpace(systemPrompt),
+		appendPrompt:     strings.TrimSpace(appendPrompt),
+		baseAppendPrompt: strings.TrimSpace(appendPrompt),
+		cmd:              cmd,
+		cliExtraArgs:     cliExtraArgs,
+		configEnv:        configEnv,
+		activeIdx:        -1,
+	}
+	if profileDir, _ := opts["agent_profiles_dir"].(string); strings.TrimSpace(profileDir) != "" {
+		roles, err := loadRoleProfiles(profileDir)
+		if err != nil {
+			return nil, fmt.Errorf("codex: load agent profiles: %w", err)
+		}
+		agent.roles = roles
+		if role, _ := opts["agent_role"].(string); strings.TrimSpace(role) != "" {
+			if err := agent.SetRole(role); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return agent, nil
+}
+
+func (a *Agent) SetRole(name string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, role := range a.roles {
+		if role.Name != name {
+			continue
+		}
+		a.role = role.Name
+		a.model = role.Model
+		a.reasoningEffort = normalizeReasoningEffort(role.ReasoningEffort)
+		a.appendPrompt = strings.TrimSpace(strings.Join([]string{a.baseAppendPrompt, role.DeveloperInstructions}, "\n\n"))
+		return nil
+	}
+	return fmt.Errorf("role %q not found", name)
+}
+
+func (a *Agent) GetRole() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.role
+}
+
+func (a *Agent) AvailableRoles() []core.AgentRole {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return append([]core.AgentRole(nil), a.roles...)
 }
 
 func normalizeBackend(raw string) string {
@@ -311,7 +356,6 @@ func readCodexCachedModels() []core.ModelOption {
 	return parseCodexModelsJSON(b)
 }
 
-
 // parseCodexModelsJSON parses a Codex models JSON file (model_catalog.json
 // or models_cache.json) into a deduplicated, filtered slice of ModelOption.
 // It is shared by readCodexCachedModels and readCodexModelCatalog.
@@ -356,7 +400,6 @@ func parseCodexModelsJSON(data []byte) []core.ModelOption {
 	}
 	return models
 }
-
 
 // readCodexModelCatalog reads $CODEX_HOME/config.toml to find the
 // model_catalog_json setting, then reads and parses that JSON file.

@@ -488,6 +488,22 @@ type ReasoningEffortSwitcher interface {
 	AvailableReasoningEfforts() []string
 }
 
+// AgentRole describes one locally configured agent role.
+type AgentRole struct {
+	Name                  string
+	Description           string
+	Model                 string
+	ReasoningEffort       string
+	DeveloperInstructions string
+}
+
+// RoleSwitcher is an optional interface for agents that can switch a local role profile.
+type RoleSwitcher interface {
+	AvailableRoles() []AgentRole
+	GetRole() string
+	SetRole(name string) error
+}
+
 // ModelOption describes a selectable model.
 type ModelOption struct {
 	Name  string // model identifier passed to CLI
