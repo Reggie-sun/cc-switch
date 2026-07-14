@@ -305,6 +305,7 @@ const (
 	MsgModelCardSwitchFailed MsgKey = "model_card_switch_failed"
 	MsgModelNotSupported     MsgKey = "model_not_supported"
 	MsgRoleNotSupported      MsgKey = "role_not_supported"
+	MsgRoleListTitle         MsgKey = "role_list_title"
 	MsgRoleUsage             MsgKey = "role_usage"
 	MsgRoleChanged           MsgKey = "role_changed"
 	MsgReasoningCurrent      MsgKey = "reasoning_current"
@@ -2247,6 +2248,7 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "Este agente no soporta el cambio de modelo.",
 	},
 	MsgRoleNotSupported: {LangEnglish: "This agent does not support role switching.", LangChinese: "当前 Agent 不支持角色切换。", LangTraditionalChinese: "目前 Agent 不支援角色切換。", LangJapanese: "このエージェントはロール切替をサポートしていません。", LangSpanish: "Este agente no admite el cambio de rol."},
+	MsgRoleListTitle:    {LangEnglish: "Available roles:", LangChinese: "可用角色：", LangTraditionalChinese: "可用角色：", LangJapanese: "利用可能なロール：", LangSpanish: "Roles disponibles:"},
 	MsgRoleUsage:        {LangEnglish: "Usage: `/role switch <number>` or `/role switch <name>`", LangChinese: "用法: `/role switch <序号>` 或 `/role switch <角色名>`", LangTraditionalChinese: "用法: `/role switch <序號>` 或 `/role switch <角色名>`", LangJapanese: "使い方: `/role switch <番号>` または `/role switch <名前>`", LangSpanish: "Uso: `/role switch <número>` o `/role switch <nombre>`"},
 	MsgRoleChanged:      {LangEnglish: "Role switched to `%s`. A new session is ready.", LangChinese: "已切换到角色 `%s`，新会话已就绪。", LangTraditionalChinese: "已切換至角色 `%s`，新對話已就緒。", LangJapanese: "ロールを `%s` に切り替え、新しいセッションを開始しました。", LangSpanish: "Rol cambiado a `%s`. La nueva sesión está lista."},
 	MsgReasoningCurrent: {

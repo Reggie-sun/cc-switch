@@ -9565,7 +9565,7 @@ func (e *Engine) cmdRole(p Platform, msg *Message, args []string) {
 	roles := switcher.AvailableRoles()
 	if len(args) == 0 {
 		var sb strings.Builder
-		sb.WriteString("Available roles:\n")
+		sb.WriteString(e.i18n.T(MsgRoleListTitle) + "\n")
 		for i, role := range roles {
 			sb.WriteString(fmt.Sprintf("%d. %s — %s\n", i+1, role.Name, role.Description))
 		}
@@ -9578,8 +9578,10 @@ func (e *Engine) cmdRole(p Platform, msg *Message, args []string) {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgRoleUsage))
 		return
 	}
-	if i, parseErr := strconv.Atoi(target); parseErr == nil && i >= 1 && i <= len(roles) {
-		target = roles[i-1].Name
+	target, ok = resolveRoleName(roles, target)
+	if !ok {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgRoleUsage))
+		return
 	}
 	if e.roleSaveFunc != nil {
 		if err := e.roleSaveFunc(target); err != nil {
@@ -9607,6 +9609,22 @@ func resolveModelAlias(models []ModelOption, input string) string {
 		}
 	}
 	return input
+}
+
+func resolveRoleName(roles []AgentRole, input string) (string, bool) {
+	input = strings.TrimSpace(input)
+	if i, err := strconv.Atoi(input); err == nil {
+		if i >= 1 && i <= len(roles) {
+			return roles[i-1].Name, true
+		}
+		return "", false
+	}
+	for _, role := range roles {
+		if strings.EqualFold(role.Name, input) {
+			return role.Name, true
+		}
+	}
+	return "", false
 }
 
 func resolveModelSwitchTarget(input string, models []ModelOption) string {
