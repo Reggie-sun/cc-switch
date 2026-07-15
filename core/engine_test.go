@@ -12340,6 +12340,101 @@ func (a *switchableAgent) ListSessions(_ context.Context) ([]AgentSessionInfo, e
 	return a.sessions, nil
 }
 
+func TestCmdResume_NoArgs_ListsSessions(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	agent := &switchableAgent{
+		sessions: []AgentSessionInfo{
+			{ID: "sess-aaa", Summary: "First session", MessageCount: 5},
+		},
+	}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+
+	msg := &Message{SessionKey: "test:ch:user1", Content: "/resume", ReplyCtx: "ctx"}
+	if handled := e.handleCommand(p, msg, msg.Content); !handled {
+		t.Fatal("expected /resume to be handled as a built-in command")
+	}
+
+	sent := p.getSent()
+	if len(sent) == 0 || !strings.Contains(sent[0], "First session") {
+		t.Fatalf("expected /resume to list resumable sessions, got %v", sent)
+	}
+}
+
+func TestCmdResume_ByIndex_SetsSession(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	agent := &switchableAgent{
+		sessions: []AgentSessionInfo{
+			{ID: "sess-aaa", Summary: "First session", MessageCount: 5},
+			{ID: "sess-bbb", Summary: "Second session", MessageCount: 3},
+		},
+	}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+
+	key := "test:ch:user1"
+	msg := &Message{SessionKey: key, Content: "/resume 2", ReplyCtx: "ctx"}
+	if handled := e.handleCommand(p, msg, msg.Content); !handled {
+		t.Fatal("expected /resume 2 to be handled as a built-in command")
+	}
+
+	if id := e.sessions.GetOrCreateActive(key).GetAgentSessionID(); id != "sess-bbb" {
+		t.Fatalf("expected /resume 2 to select sess-bbb, got %q", id)
+	}
+}
+
+func TestCmdResume_RespectsSwitchDisabled(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	agent := &switchableAgent{
+		sessions: []AgentSessionInfo{
+			{ID: "sess-aaa", Summary: "First session", MessageCount: 5},
+		},
+	}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+	e.SetDisabledCommands([]string{"switch"})
+
+	key := "test:ch:user1"
+	msg := &Message{SessionKey: key, Content: "/resume 1", ReplyCtx: "ctx", UserID: "user1"}
+	if handled := e.handleCommand(p, msg, msg.Content); !handled {
+		t.Fatal("expected disabled /resume to be handled by the command policy")
+	}
+
+	if id := e.sessions.GetOrCreateActive(key).GetAgentSessionID(); id != "" {
+		t.Fatalf("expected disabled /resume not to switch sessions, got %q", id)
+	}
+	sent := p.getSent()
+	if len(sent) == 0 || !strings.Contains(sent[0], "/switch") {
+		t.Fatalf("expected /resume to report the shared /switch policy, got %v", sent)
+	}
+}
+
+func TestCmdResume_RespectsRoleSwitchDisabled(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	agent := &switchableAgent{
+		sessions: []AgentSessionInfo{
+			{ID: "sess-aaa", Summary: "First session", MessageCount: 5},
+		},
+	}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+	roles := NewUserRoleManager()
+	roles.Configure("member", []RoleInput{
+		{Name: "member", UserIDs: []string{"*"}, DisabledCommands: []string{"switch"}},
+	})
+	e.SetUserRoles(roles)
+
+	key := "test:ch:user1"
+	msg := &Message{SessionKey: key, Content: "/resume 1", ReplyCtx: "ctx", UserID: "user1"}
+	if handled := e.handleCommand(p, msg, msg.Content); !handled {
+		t.Fatal("expected role-disabled /resume to be handled by the command policy")
+	}
+
+	if id := e.sessions.GetOrCreateActive(key).GetAgentSessionID(); id != "" {
+		t.Fatalf("expected role-disabled /resume not to switch sessions, got %q", id)
+	}
+	sent := p.getSent()
+	if len(sent) == 0 || !strings.Contains(sent[0], "/switch") {
+		t.Fatalf("expected /resume to report the role's shared /switch policy, got %v", sent)
+	}
+}
+
 func TestCmdSwitch_NoArgs_ShowsUsage(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)

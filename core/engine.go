@@ -6200,7 +6200,7 @@ var builtinCommands = []struct {
 }{
 	{[]string{"new"}, "new"},
 	{[]string{"list", "sessions"}, "list"},
-	{[]string{"switch"}, "switch"},
+	{[]string{"switch", "resume"}, "switch"},
 	{[]string{"name", "rename"}, "name"},
 	{[]string{"current"}, "current"},
 	{[]string{"status"}, "status"},
@@ -6403,7 +6403,11 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 	case "list":
 		e.cmdList(p, msg, args)
 	case "switch":
-		e.cmdSwitch(p, msg, args)
+		if cmd == "resume" && len(args) == 0 {
+			e.cmdList(p, msg, nil)
+		} else {
+			e.cmdSwitch(p, msg, args)
+		}
 	case "name":
 		e.cmdName(p, msg, args)
 	case "current":
