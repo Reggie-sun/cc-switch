@@ -306,7 +306,7 @@ type HistoryEntry struct {
 type AgentSessionInfo struct {
 	ID           string
 	Summary      string
-	MessageCount int
+	MessageCount int // -1 means the agent backend cannot provide a count cheaply.
 	ModifiedAt   time.Time
 	GitBranch    string
 }

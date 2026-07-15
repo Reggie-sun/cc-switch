@@ -3,6 +3,7 @@ package codex
 import (
 	"bufio"
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/chenhg5/cc-connect/core"
+	_ "modernc.org/sqlite"
 )
 
 // resolveCodexHomeDir returns the effective CODEX_HOME directory.
@@ -38,7 +40,12 @@ func listCodexSessions(workDir, codexHome string) ([]core.AgentSessionInfo, erro
 		absWorkDir = workDir
 	}
 
-	sessionsDir := filepath.Join(resolveCodexHomeDir(codexHome), "sessions")
+	resolvedHome := resolveCodexHomeDir(codexHome)
+	if sessions, ok := listCodexSessionsFromStateDB(resolvedHome, absWorkDir); ok {
+		return mergeCodexSessionMetadata(sessions, filepath.Join(resolvedHome, "sessions"), absWorkDir), nil
+	}
+
+	sessionsDir := filepath.Join(resolvedHome, "sessions")
 
 	var files []string
 	_ = filepath.Walk(sessionsDir, func(path string, info os.FileInfo, err error) error {
@@ -59,16 +66,188 @@ func listCodexSessions(workDir, codexHome string) ([]core.AgentSessionInfo, erro
 	for _, f := range files {
 		info := parseCodexSessionFile(f, absWorkDir)
 		if info != nil {
-			patchSessionSource(info.ID, codexHome)
+			patchSessionSourceFile(f)
 			sessions = append(sessions, *info)
 		}
 	}
 
-	sort.Slice(sessions, func(i, j int) bool {
-		return sessions[i].ModifiedAt.After(sessions[j].ModifiedAt)
-	})
+	sortCodexSessions(sessions)
 
 	return sessions, nil
+}
+
+func listCodexSessionsFromStateDB(codexHome, workDir string) ([]core.AgentSessionInfo, bool) {
+	dbPath := filepath.Join(codexHome, "state_5.sqlite")
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil, false
+	}
+
+	db, err := sql.Open("sqlite", dbPath+"?mode=ro")
+	if err != nil {
+		return nil, false
+	}
+	defer db.Close()
+
+	columns, err := codexThreadColumns(db)
+	if err != nil || !columns["id"] || !columns["cwd"] {
+		return nil, false
+	}
+
+	summaryParts := make([]string, 0, 3)
+	for _, column := range []string{"title", "first_user_message", "preview"} {
+		if columns[column] {
+			summaryParts = append(summaryParts, "NULLIF("+column+", '')")
+		}
+	}
+	summaryExpr := "''"
+	if len(summaryParts) > 0 {
+		summaryExpr = "COALESCE(" + strings.Join(summaryParts, ", ") + ", '')"
+	}
+
+	updatedParts := make([]string, 0, 2)
+	if columns["updated_at_ms"] {
+		updatedParts = append(updatedParts, "updated_at_ms")
+	}
+	if columns["updated_at"] {
+		updatedParts = append(updatedParts, "updated_at * 1000")
+	}
+	updatedExpr := "0"
+	if len(updatedParts) > 0 {
+		updatedExpr = "COALESCE(" + strings.Join(updatedParts, ", ") + ", 0)"
+	}
+
+	where := "cwd = ?"
+	if columns["archived"] {
+		where += " AND archived = 0"
+	}
+	query := "SELECT id, " + summaryExpr + ", " + updatedExpr +
+		" FROM threads WHERE " + where + " ORDER BY " + updatedExpr + " DESC, id DESC"
+	rows, err := db.Query(query, workDir)
+	if err != nil {
+		return nil, false
+	}
+	defer rows.Close()
+
+	var sessions []core.AgentSessionInfo
+	for rows.Next() {
+		var id, summary string
+		var updatedAtMS int64
+		if err := rows.Scan(&id, &summary, &updatedAtMS); err != nil {
+			return nil, false
+		}
+		sessions = append(sessions, core.AgentSessionInfo{
+			ID:           id,
+			Summary:      normalizeCodexSessionSummary(summary),
+			MessageCount: -1,
+			ModifiedAt:   time.UnixMilli(updatedAtMS),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false
+	}
+	return sessions, true
+}
+
+func mergeCodexSessionMetadata(indexed []core.AgentSessionInfo, sessionsDir, workDir string) []core.AgentSessionInfo {
+	known := make(map[string]struct{}, len(indexed))
+	for _, session := range indexed {
+		known[session.ID] = struct{}{}
+	}
+
+	sessions := append([]core.AgentSessionInfo(nil), indexed...)
+	_ = filepath.Walk(sessionsDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".jsonl") {
+			return nil
+		}
+		id, cwd, needsSourcePatch, ok := readCodexSessionMetadata(path)
+		if !ok || cwd != workDir {
+			return nil
+		}
+		if _, exists := known[id]; exists {
+			if needsSourcePatch {
+				patchSessionSourceFile(path)
+			}
+			return nil
+		}
+		sessionInfo := parseCodexSessionFile(path, workDir)
+		if sessionInfo == nil {
+			return nil
+		}
+		if needsSourcePatch {
+			patchSessionSourceFile(path)
+		}
+		known[id] = struct{}{}
+		sessions = append(sessions, *sessionInfo)
+		return nil
+	})
+
+	sortCodexSessions(sessions)
+	return sessions
+}
+
+func readCodexSessionMetadata(path string) (id, cwd string, needsSourcePatch, ok bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", "", false, false
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 256*1024)
+	for scanner.Scan() {
+		if len(scanner.Bytes()) == 0 {
+			continue
+		}
+		var entry struct {
+			Type    string `json:"type"`
+			Payload struct {
+				ID  string `json:"id"`
+				Cwd string `json:"cwd"`
+			} `json:"payload"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &entry) != nil || entry.Type != "session_meta" || entry.Payload.ID == "" {
+			return "", "", false, false
+		}
+		return entry.Payload.ID, entry.Payload.Cwd, bytes.Contains(scanner.Bytes(), []byte(`"source":"exec"`)), true
+	}
+	return "", "", false, false
+}
+
+func sortCodexSessions(sessions []core.AgentSessionInfo) {
+	sort.Slice(sessions, func(i, j int) bool {
+		if sessions[i].ModifiedAt.Equal(sessions[j].ModifiedAt) {
+			return sessions[i].ID > sessions[j].ID
+		}
+		return sessions[i].ModifiedAt.After(sessions[j].ModifiedAt)
+	})
+}
+
+func normalizeCodexSessionSummary(summary string) string {
+	summary = strings.Join(strings.Fields(summary), " ")
+	if len([]rune(summary)) > 60 {
+		return string([]rune(summary)[:60]) + "..."
+	}
+	return summary
+}
+
+func codexThreadColumns(db *sql.DB) (map[string]bool, error) {
+	rows, err := db.Query("PRAGMA table_info(threads)")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	columns := make(map[string]bool)
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return nil, err
+		}
+		columns[name] = true
+	}
+	return columns, rows.Err()
 }
 
 // parseCodexSessionFile reads a Codex JSONL transcript.
@@ -117,6 +296,9 @@ func parseCodexSessionFile(path, filterCwd string) *core.AgentSessionInfo {
 			if json.Unmarshal(entry.Payload, &meta) == nil {
 				sessionID = meta.ID
 				sessionCwd = meta.Cwd
+				if filterCwd != "" && sessionCwd != "" && sessionCwd != filterCwd {
+					return nil
+				}
 			}
 
 		case "response_item":
@@ -155,9 +337,7 @@ func parseCodexSessionFile(path, filterCwd string) *core.AgentSessionInfo {
 		return nil
 	}
 
-	if len([]rune(summary)) > 60 {
-		summary = string([]rune(summary)[:60]) + "..."
-	}
+	summary = normalizeCodexSessionSummary(summary)
 
 	return &core.AgentSessionInfo{
 		ID:           sessionID,
@@ -269,6 +449,21 @@ func getSessionHistory(sessionID, codexHome string, limit int) ([]core.HistoryEn
 func patchSessionSource(sessionID, codexHome string) {
 	path := findSessionFile(sessionID, codexHome)
 	if path == "" {
+		return
+	}
+	patchSessionSourceFile(path)
+}
+
+func patchSessionSourceFile(path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+	needsPatch := scanner.Scan() && bytes.Contains(scanner.Bytes(), []byte(`"source":"exec"`))
+	_ = f.Close()
+	if !needsPatch {
 		return
 	}
 

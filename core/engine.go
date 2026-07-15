@@ -6833,6 +6833,13 @@ const listPageSize = 20
 // dirCardPageSize is the max directory history rows per card page (Feishu / other card UIs).
 const dirCardPageSize = 20
 
+func (e *Engine) formatSessionListItem(marker string, index int, displayName string, messageCount int, modifiedAt string) string {
+	if messageCount < 0 {
+		return e.i18n.Tf(MsgListItemUnknownCount, marker, index, displayName, modifiedAt)
+	}
+	return e.i18n.Tf(MsgListItem, marker, index, displayName, messageCount, modifiedAt)
+}
+
 func (e *Engine) cmdList(p Platform, msg *Message, args []string) {
 	agent, sessions, _, err := e.commandContext(p, msg)
 	if err != nil {
@@ -6900,8 +6907,7 @@ func (e *Engine) cmdList(p Platform, msg *Message, args []string) {
 					displayName = string([]rune(displayName)[:40]) + "…"
 				}
 			}
-			sb.WriteString(fmt.Sprintf("%s **%d.** %s · **%d** msgs · %s\n",
-				marker, i+1, displayName, s.MessageCount, s.ModifiedAt.Format("01-02 15:04")))
+			sb.WriteString(e.formatSessionListItem(marker, i+1, displayName, s.MessageCount, s.ModifiedAt.Format("01-02 15:04")) + "\n")
 		}
 		if totalPages > 1 {
 			sb.WriteString(fmt.Sprintf(e.i18n.T(MsgListPageHint), page, totalPages))
@@ -6971,8 +6977,11 @@ func (e *Engine) cmdSwitch(p Platform, msg *Message, args []string) {
 	if displayName == "" {
 		displayName = matched.Summary
 	}
-	e.reply(p, msg.ReplyCtx,
-		e.i18n.Tf(MsgSwitchSuccess, displayName, shortID, matched.MessageCount))
+	success := e.i18n.Tf(MsgSwitchSuccess, displayName, shortID, matched.MessageCount)
+	if matched.MessageCount < 0 {
+		success = e.i18n.Tf(MsgSwitchSuccessUnknownCount, displayName, shortID)
+	}
+	e.reply(p, msg.ReplyCtx, success)
 }
 
 // matchSession resolves a user query to an agent session. Priority:
@@ -12470,7 +12479,7 @@ func (e *Engine) renderDeleteModeSelectCard(sessionKey string, sessions *Session
 			btnType = "primary"
 		}
 		cb.ListItemBtn(
-			e.i18n.Tf(MsgListItem, marker, i+1, e.deleteSessionDisplayName(sessions, &s), s.MessageCount, s.ModifiedAt.Format("01-02 15:04")),
+			e.formatSessionListItem(marker, i+1, e.deleteSessionDisplayName(sessions, &s), s.MessageCount, s.ModifiedAt.Format("01-02 15:04")),
 			btnText,
 			btnType,
 			action,
@@ -13039,7 +13048,7 @@ func (e *Engine) renderListCard(sessionKey string, page int) (*Card, error) {
 			btnType = "primary"
 		}
 		cb.ListItemBtn(
-			e.i18n.Tf(MsgListItem, marker, i+1, displayName, s.MessageCount, s.ModifiedAt.Format("01-02 15:04")),
+			e.formatSessionListItem(marker, i+1, displayName, s.MessageCount, s.ModifiedAt.Format("01-02 15:04")),
 			fmt.Sprintf("#%d", i+1),
 			btnType,
 			fmt.Sprintf("act:/switch %d", i+1),

@@ -378,6 +378,7 @@ const (
 	MsgCardTitleVersion          MsgKey = "card_title_version"
 	MsgCardTitleUpgrade          MsgKey = "card_title_upgrade"
 	MsgListItem                  MsgKey = "list_item"
+	MsgListItemUnknownCount      MsgKey = "list_item_unknown_count"
 	MsgListEmptySummary          MsgKey = "list_empty_summary"
 	MsgCronIDLabel               MsgKey = "cron_id_label"
 	MsgCronFailedSuffix          MsgKey = "cron_failed_suffix"
@@ -507,9 +508,10 @@ const (
 	MsgDeleteModeDeletingBody   MsgKey = "delete_mode_deleting_body"
 	MsgDeleteModeMissingSession MsgKey = "delete_mode_missing_session"
 
-	MsgSwitchSuccess   MsgKey = "switch_success"
-	MsgSwitchNoMatch   MsgKey = "switch_no_match"
-	MsgSwitchNoSession MsgKey = "switch_no_session"
+	MsgSwitchSuccess             MsgKey = "switch_success"
+	MsgSwitchSuccessUnknownCount MsgKey = "switch_success_unknown_count"
+	MsgSwitchNoMatch             MsgKey = "switch_no_match"
+	MsgSwitchNoSession           MsgKey = "switch_no_session"
 
 	MsgCommandTimeout MsgKey = "command_timeout"
 
@@ -2627,6 +2629,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangJapanese:           "%s **%d.** %s · **%d** 件のメッセージ · %s",
 		LangSpanish:            "%s **%d.** %s · **%d** mensajes · %s",
 	},
+	MsgListItemUnknownCount: {
+		LangEnglish:            "%s **%d.** %s · msgs unknown · %s",
+		LangChinese:            "%s **%d.** %s · 消息数未知 · %s",
+		LangTraditionalChinese: "%s **%d.** %s · 訊息數未知 · %s",
+		LangJapanese:           "%s **%d.** %s · メッセージ数不明 · %s",
+		LangSpanish:            "%s **%d.** %s · mensajes desconocidos · %s",
+	},
 	MsgListEmptySummary: {
 		LangEnglish: "(empty)", LangChinese: "（空）", LangTraditionalChinese: "（空）",
 		LangJapanese: "（空）", LangSpanish: "(vacío)",
@@ -3191,6 +3200,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "✅ 已切換到：%s（%s，%d 則訊息）",
 		LangJapanese:           "✅ 切り替え：%s（%s、%d件）",
 		LangSpanish:            "✅ Cambiado a: %s (%s, %d mensajes)",
+	},
+	MsgSwitchSuccessUnknownCount: {
+		LangEnglish:            "✅ Switched to: %s (%s, msgs unknown)",
+		LangChinese:            "✅ 已切换到：%s（%s，消息数未知）",
+		LangTraditionalChinese: "✅ 已切換到：%s（%s，訊息數未知）",
+		LangJapanese:           "✅ 切り替え：%s（%s、メッセージ数不明）",
+		LangSpanish:            "✅ Cambiado a: %s (%s, mensajes desconocidos)",
 	},
 	MsgSwitchNoMatch: {
 		LangEnglish:            "❌ No session matching %q",

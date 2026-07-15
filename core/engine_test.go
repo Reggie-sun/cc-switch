@@ -12344,7 +12344,7 @@ func TestCmdResume_NoArgs_ListsSessions(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	agent := &switchableAgent{
 		sessions: []AgentSessionInfo{
-			{ID: "sess-aaa", Summary: "First session", MessageCount: 5},
+			{ID: "sess-aaa", Summary: "First session", MessageCount: -1},
 		},
 	}
 	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
@@ -12358,6 +12358,9 @@ func TestCmdResume_NoArgs_ListsSessions(t *testing.T) {
 	if len(sent) == 0 || !strings.Contains(sent[0], "First session") {
 		t.Fatalf("expected /resume to list resumable sessions, got %v", sent)
 	}
+	if !strings.Contains(sent[0], "msgs unknown") || strings.Contains(sent[0], "-1") {
+		t.Fatalf("expected /resume to render an unavailable message count without a fake number, got %v", sent)
+	}
 }
 
 func TestCmdResume_ByIndex_SetsSession(t *testing.T) {
@@ -12365,7 +12368,7 @@ func TestCmdResume_ByIndex_SetsSession(t *testing.T) {
 	agent := &switchableAgent{
 		sessions: []AgentSessionInfo{
 			{ID: "sess-aaa", Summary: "First session", MessageCount: 5},
-			{ID: "sess-bbb", Summary: "Second session", MessageCount: 3},
+			{ID: "sess-bbb", Summary: "Second session", MessageCount: -1},
 		},
 	}
 	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
@@ -12378,6 +12381,10 @@ func TestCmdResume_ByIndex_SetsSession(t *testing.T) {
 
 	if id := e.sessions.GetOrCreateActive(key).GetAgentSessionID(); id != "sess-bbb" {
 		t.Fatalf("expected /resume 2 to select sess-bbb, got %q", id)
+	}
+	sent := p.getSent()
+	if len(sent) == 0 || !strings.Contains(sent[0], "msgs unknown") || strings.Contains(sent[0], "-1") {
+		t.Fatalf("expected /resume 2 to report an unavailable message count without a fake number, got %v", sent)
 	}
 }
 
