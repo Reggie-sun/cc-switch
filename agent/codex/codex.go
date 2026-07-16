@@ -366,11 +366,15 @@ func readCodexCachedModels() []core.ModelOption {
 func parseCodexModelsJSON(data []byte) []core.ModelOption {
 	var payload struct {
 		Models []struct {
-			Slug           string `json:"slug"`
-			DisplayName    string `json:"display_name"`
-			Description    string `json:"description"`
-			Visibility     string `json:"visibility"`
-			SupportedInAPI bool   `json:"supported_in_api"`
+			Slug                     string `json:"slug"`
+			DisplayName              string `json:"display_name"`
+			Description              string `json:"description"`
+			Visibility               string `json:"visibility"`
+			SupportedInAPI           bool   `json:"supported_in_api"`
+			DefaultReasoningLevel    string `json:"default_reasoning_level"`
+			SupportedReasoningLevels []struct {
+				Effort string `json:"effort"`
+			} `json:"supported_reasoning_levels"`
 		} `json:"models"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
@@ -397,9 +401,25 @@ func parseCodexModelsJSON(data []byte) []core.ModelOption {
 			continue
 		}
 		seen[name] = struct{}{}
+
+		var efforts []string
+		seenEfforts := make(map[string]struct{}, len(m.SupportedReasoningLevels))
+		for _, level := range m.SupportedReasoningLevels {
+			effort := normalizeReasoningEffort(level.Effort)
+			if effort == "" {
+				continue
+			}
+			if _, ok := seenEfforts[effort]; ok {
+				continue
+			}
+			seenEfforts[effort] = struct{}{}
+			efforts = append(efforts, effort)
+		}
 		models = append(models, core.ModelOption{
-			Name: name,
-			Desc: strings.TrimSpace(m.Description),
+			Name:                   name,
+			Desc:                   strings.TrimSpace(m.Description),
+			DefaultReasoningEffort: normalizeReasoningEffort(m.DefaultReasoningLevel),
+			ReasoningEfforts:       efforts,
 		})
 	}
 	return models

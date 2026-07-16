@@ -506,9 +506,11 @@ type RoleSwitcher interface {
 
 // ModelOption describes a selectable model.
 type ModelOption struct {
-	Name  string // model identifier passed to CLI
-	Desc  string // short description (display_name or empty)
-	Alias string // optional short alias for the /model command (e.g. "codex" for "gpt-5.3-codex")
+	Name                   string   // model identifier passed to CLI
+	Desc                   string   // short description (display_name or empty)
+	Alias                  string   // optional short alias for the /model command (e.g. "codex" for "gpt-5.3-codex")
+	DefaultReasoningEffort string   // model-specific default reasoning effort, or empty when unknown
+	ReasoningEfforts       []string // model-specific supported reasoning efforts, or empty when unknown
 }
 
 // UsageReporter is an optional interface for agents that can report account or

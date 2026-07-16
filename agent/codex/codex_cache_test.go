@@ -5,8 +5,34 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"testing"
 )
+
+func TestParseCodexModelsJSON_PreservesReasoningMetadata(t *testing.T) {
+	data := []byte(`{"models":[
+		{"slug":"gpt-5.6-sol","visibility":"list","supported_in_api":true,
+		 "default_reasoning_level":" low ","supported_reasoning_levels":[
+		 {"effort":"low"},{"effort":"med"},{"effort":"medium"},{"effort":"high"},{"effort":"xhgh"},{"effort":"max"},{"effort":"urtal"},{"effort":"unknown"},{"effort":""}]},
+		{"slug":"gpt-5.6-luna","visibility":"list","supported_in_api":true,
+		 "default_reasoning_level":"medium","supported_reasoning_levels":[
+		 {"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"}]},
+		{"slug":"legacy","visibility":"list","supported_in_api":true}]}`)
+
+	models := parseCodexModelsJSON(data)
+	if len(models) != 3 {
+		t.Fatalf("models=%#v", models)
+	}
+	if models[0].DefaultReasoningEffort != "low" || !reflect.DeepEqual(models[0].ReasoningEfforts, []string{"low", "medium", "high", "xhigh", "max", "ultra"}) {
+		t.Fatalf("sol=%#v", models[0])
+	}
+	if models[1].DefaultReasoningEffort != "medium" || !reflect.DeepEqual(models[1].ReasoningEfforts, []string{"low", "medium", "high", "xhigh", "max"}) {
+		t.Fatalf("luna=%#v", models[1])
+	}
+	if models[2].DefaultReasoningEffort != "" || len(models[2].ReasoningEfforts) != 0 {
+		t.Fatalf("legacy=%#v", models[2])
+	}
+}
 
 func TestAvailableModels_FallbackToModelsCache(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
