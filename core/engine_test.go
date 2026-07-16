@@ -9546,6 +9546,43 @@ func TestRenderModelCard_UsesModelSpecificReasoningEfforts(t *testing.T) {
 	}
 }
 
+func TestRenderModelCard_QueriesModelsOnceWhenCatalogEmpty(t *testing.T) {
+	agent := &stubStrictModelAgent{stubModelModeAgent: stubModelModeAgent{model: "custom-model"}}
+	e := NewEngine("test", agent, nil, "", LangEnglish)
+
+	e.renderModelCard("")
+
+	if agent.calls != 1 {
+		t.Fatalf("AvailableModels calls = %d, want 1 when the queried catalog is empty", agent.calls)
+	}
+}
+
+func TestRenderReasoningCard_UsesModelSpecificReasoningEfforts(t *testing.T) {
+	agent := &stubStrictModelAgent{
+		stubModelModeAgent: stubModelModeAgent{model: "gpt-5.6-luna"},
+		models: []ModelOption{{
+			Name:                   "gpt-5.6-luna",
+			DefaultReasoningEffort: "medium",
+			ReasoningEfforts:       []string{"low", "medium", "high", "xhigh", "max"},
+		}},
+	}
+	e := NewEngine("test", agent, nil, "", LangEnglish)
+
+	selects := cardSelects(e.renderReasoningCard(""))
+	if len(selects) != 1 {
+		t.Fatalf("select count = %d, want 1: %#v", len(selects), selects)
+	}
+	wantEfforts := []string{"low", "medium", "high", "xhigh", "max"}
+	if len(selects[0].Options) != len(wantEfforts) {
+		t.Fatalf("reasoning options = %#v, want %v", selects[0].Options, wantEfforts)
+	}
+	for i, effort := range wantEfforts {
+		if got := selects[0].Options[i].Text; got != effort {
+			t.Errorf("reasoning option %d = %q, want %q", i, got, effort)
+		}
+	}
+}
+
 func TestReasoningEffortTarget_ResolvesSupportedCanonicalValues(t *testing.T) {
 	efforts := []string{"low", "medium", "high", "xhigh", "max", "ultra"}
 	for _, tt := range []struct {

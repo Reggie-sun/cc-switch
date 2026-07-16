@@ -9776,6 +9776,8 @@ func (e *Engine) reasoningEffortOptions(agent Agent, known []ModelOption) ([]str
 		return fallback, ""
 	}
 	models := known
+	// A nil slice means the catalog has not been queried. A non-nil empty
+	// slice means it was queried and returned no models.
 	if models == nil {
 		fetchCtx, cancel := context.WithTimeout(e.ctx, 3*time.Second)
 		models = modelSwitcher.AvailableModels(fetchCtx)
@@ -12912,6 +12914,9 @@ func (e *Engine) renderModelCard(sessionKey string) *Card {
 	fetchCtx, cancel := context.WithTimeout(e.ctx, 3*time.Second)
 	defer cancel()
 	models := switcher.AvailableModels(fetchCtx)
+	if models == nil {
+		models = []ModelOption{}
+	}
 	current := switcher.GetModel()
 
 	var sb strings.Builder
