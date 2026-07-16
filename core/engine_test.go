@@ -434,6 +434,19 @@ type stubAskQuestionRichCardPlatform struct {
 	stubCardPlatform
 }
 
+func cardSelects(card *Card) []CardSelect {
+	var selects []CardSelect
+	if card == nil {
+		return selects
+	}
+	for _, element := range card.Elements {
+		if selectElement, ok := element.(CardSelect); ok {
+			selects = append(selects, selectElement)
+		}
+	}
+	return selects
+}
+
 func (p *stubAskQuestionRichCardPlatform) BuildRichCard(status CardStatus, title string, steps []ToolStep, markdown string, streaming bool, statusFooter string) string {
 	return "rich card"
 }
@@ -9469,6 +9482,143 @@ func TestHandleCardNav_ModelCardUsesWorkspaceAgent(t *testing.T) {
 	}
 	if strings.Contains(text, "global-model") {
 		t.Fatalf("model card text = %q, should not use global model", text)
+	}
+}
+
+func TestRenderModelCard_UsesModelSpecificReasoningEfforts(t *testing.T) {
+	tests := []struct {
+		name        string
+		model       ModelOption
+		wantEfforts []string
+	}{
+		{
+			name: "Sol metadata",
+			model: ModelOption{
+				Name:                   "gpt-5.6-sol",
+				DefaultReasoningEffort: "low",
+				ReasoningEfforts:       []string{"low", "medium", "high", "xhigh", "max", "ultra"},
+			},
+			wantEfforts: []string{"low", "medium", "high", "xhigh", "max", "ultra"},
+		},
+		{
+			name: "Luna metadata",
+			model: ModelOption{
+				Name:                   "gpt-5.6-luna",
+				DefaultReasoningEffort: "medium",
+				ReasoningEfforts:       []string{"low", "medium", "high", "xhigh", "max"},
+			},
+			wantEfforts: []string{"low", "medium", "high", "xhigh", "max"},
+		},
+		{
+			name:        "legacy fallback",
+			model:       ModelOption{Name: "legacy"},
+			wantEfforts: []string{"low", "medium", "high", "xhigh"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agent := &stubStrictModelAgent{
+				stubModelModeAgent: stubModelModeAgent{model: tt.model.Name},
+				models:             []ModelOption{tt.model},
+			}
+			e := NewEngine("test", agent, nil, "", LangEnglish)
+
+			selects := cardSelects(e.renderModelCard(""))
+			if len(selects) != 2 {
+				t.Fatalf("select count = %d, want 2: %#v", len(selects), selects)
+			}
+			effortSelect := selects[1]
+			if len(effortSelect.Options) != len(tt.wantEfforts) {
+				t.Fatalf("effort options = %#v, want %v", effortSelect.Options, tt.wantEfforts)
+			}
+			for i, effort := range tt.wantEfforts {
+				option := effortSelect.Options[i]
+				if option.Text != effort {
+					t.Errorf("effort option %d text = %q, want %q", i, option.Text, effort)
+				}
+				wantAction := "act:/model effort " + effort
+				if option.Value != wantAction {
+					t.Errorf("effort option %d action = %q, want %q", i, option.Value, wantAction)
+				}
+			}
+		})
+	}
+}
+
+func TestReasoningEffortTarget_ResolvesSupportedCanonicalValues(t *testing.T) {
+	efforts := []string{"low", "medium", "high", "xhigh", "max", "ultra"}
+	for _, tt := range []struct {
+		input string
+		want  string
+		ok    bool
+	}{
+		{input: "2", want: "medium", ok: true},
+		{input: "XHIGH", want: "xhigh", ok: true},
+		{input: "xhgh", want: "xhigh", ok: true},
+		{input: "urtal", want: "ultra", ok: true},
+		{input: "7", ok: false},
+		{input: "minimal", ok: false},
+	} {
+		t.Run(tt.input, func(t *testing.T) {
+			got, ok := reasoningEffortTarget(tt.input, efforts)
+			if got != tt.want || ok != tt.ok {
+				t.Fatalf("reasoningEffortTarget(%q) = %q, %v; want %q, %v", tt.input, got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
+func TestReasoningEffortOptions_ValidatesModelDefault(t *testing.T) {
+	models := []ModelOption{{
+		Name:                   "gpt-5.6-luna",
+		DefaultReasoningEffort: "ultra",
+		ReasoningEfforts:       []string{"low", "medium", "high", "xhigh", "max"},
+	}}
+	agent := &stubStrictModelAgent{
+		stubModelModeAgent: stubModelModeAgent{model: "gpt-5.6-luna"},
+		models:             models,
+	}
+	e := NewEngine("test", agent, nil, "", LangEnglish)
+
+	efforts, defaultEffort := e.reasoningEffortOptions(agent, models)
+	if len(efforts) != 5 {
+		t.Fatalf("efforts = %v, want Luna's five supported efforts", efforts)
+	}
+	if defaultEffort != "" {
+		t.Fatalf("default effort = %q, want empty when unsupported", defaultEffort)
+	}
+}
+
+func TestHandleCardNav_ReasoningCardUsesWorkspaceAgent(t *testing.T) {
+	p := &stubPlatformEngine{n: "plain"}
+	globalAgent := &stubModelModeAgent{reasoningEffort: "low"}
+	e := NewEngine("test", globalAgent, []Platform{p}, "", LangEnglish)
+
+	baseDir := t.TempDir()
+	bindingPath := filepath.Join(t.TempDir(), "bindings.json")
+	e.SetMultiWorkspace(baseDir, bindingPath)
+
+	wsDir := normalizeWorkspacePath(t.TempDir())
+	channelID := "channel-reasoning-nav"
+	sessionKey := "feishu:" + channelID + ":user1"
+	e.workspaceBindings.Bind("project:test", channelID, "chan", wsDir)
+
+	ws := e.workspacePool.GetOrCreate(wsDir)
+	ws.agent = &stubModelModeAgent{reasoningEffort: "high"}
+	ws.sessions = NewSessionManager("")
+
+	card := e.handleCardNav("nav:/reasoning", sessionKey)
+	if card == nil {
+		t.Fatal("expected /reasoning card")
+	}
+	text := card.RenderText()
+	if !strings.Contains(text, "high") {
+		t.Fatalf("reasoning card text = %q, want workspace effort high", text)
+	}
+	selects := cardSelects(card)
+	if len(selects) != 1 || selects[0].InitValue != "act:/reasoning 3" {
+		t.Fatalf("reasoning selects = %#v, want workspace high selected", selects)
 	}
 }
 

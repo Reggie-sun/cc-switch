@@ -9741,6 +9741,63 @@ func (e *Engine) switchModelOnAgent(agent Agent, target string, persistConfig bo
 	return target, nil
 }
 
+func reasoningEffortTarget(input string, efforts []string) (string, bool) {
+	target := strings.ToLower(strings.TrimSpace(input))
+	switch target {
+	case "xhgh":
+		target = "xhigh"
+	case "urtal":
+		target = "ultra"
+	}
+	if idx, err := strconv.Atoi(target); err == nil {
+		if idx < 1 || idx > len(efforts) {
+			return "", false
+		}
+		target = strings.ToLower(strings.TrimSpace(efforts[idx-1]))
+	}
+	for _, effort := range efforts {
+		canonical := strings.ToLower(strings.TrimSpace(effort))
+		if canonical == target {
+			return canonical, true
+		}
+	}
+	return "", false
+}
+
+func (e *Engine) reasoningEffortOptions(agent Agent, known []ModelOption) ([]string, string) {
+	reasoningSwitcher, ok := agent.(ReasoningEffortSwitcher)
+	if !ok {
+		return nil, ""
+	}
+	fallback := append([]string(nil), reasoningSwitcher.AvailableReasoningEfforts()...)
+
+	modelSwitcher, ok := agent.(ModelSwitcher)
+	if !ok {
+		return fallback, ""
+	}
+	models := known
+	if models == nil {
+		fetchCtx, cancel := context.WithTimeout(e.ctx, 3*time.Second)
+		models = modelSwitcher.AvailableModels(fetchCtx)
+		cancel()
+	}
+	for _, model := range models {
+		if !strings.EqualFold(strings.TrimSpace(model.Name), strings.TrimSpace(modelSwitcher.GetModel())) {
+			continue
+		}
+		efforts := fallback
+		if len(model.ReasoningEfforts) > 0 {
+			efforts = append([]string(nil), model.ReasoningEfforts...)
+		}
+		defaultEffort, valid := reasoningEffortTarget(model.DefaultReasoningEffort, efforts)
+		if !valid {
+			defaultEffort = ""
+		}
+		return efforts, defaultEffort
+	}
+	return fallback, ""
+}
+
 func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 	agent, sessions, _, err := e.commandContext(p, msg)
 	if err != nil {
@@ -9795,7 +9852,7 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 			e.replyWithButtons(p, msg.ReplyCtx, sb.String(), buttons)
 			return
 		}
-		e.replyWithCard(p, msg.ReplyCtx, e.renderReasoningCard())
+		e.replyWithCard(p, msg.ReplyCtx, e.renderReasoningCard(msg.SessionKey))
 		return
 	}
 
@@ -11909,7 +11966,7 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 	case "/model":
 		return e.renderModelCard(sessionKey)
 	case "/reasoning":
-		return e.renderReasoningCard()
+		return e.renderReasoningCard(sessionKey)
 	case "/mode":
 		return e.renderModeCard()
 	case "/lang":
@@ -12879,10 +12936,25 @@ func (e *Engine) renderModelCard(sessionKey string) *Card {
 			initVal = val
 		}
 	}
+	efforts, _ := e.reasoningEffortOptions(agent, models)
+	var effortOpts []CardSelectOption
+	effortInitVal := ""
+	if reasoningSwitcher, ok := agent.(ReasoningEffortSwitcher); ok {
+		currentEffort := strings.ToLower(strings.TrimSpace(reasoningSwitcher.GetReasoningEffort()))
+		for _, effort := range efforts {
+			canonical := strings.ToLower(strings.TrimSpace(effort))
+			val := "act:/model effort " + canonical
+			effortOpts = append(effortOpts, CardSelectOption{Text: canonical, Value: val})
+			if canonical == currentEffort {
+				effortInitVal = val
+			}
+		}
+	}
 
 	cb := NewCard().Title(e.i18n.T(MsgCardTitleModel), "indigo").
 		Markdown(sb.String()).
 		Select(e.i18n.T(MsgModelSelectPlaceholder), opts, initVal).
+		Select(e.i18n.T(MsgReasoningSelectPlaceholder), effortOpts, effortInitVal).
 		Buttons(e.cardBackButton())
 	cb.Note(e.i18n.T(MsgModelUsage))
 	return cb.Build()
@@ -12910,13 +12982,18 @@ func (e *Engine) renderModelSwitchResultCard(target string, err error) *Card {
 		Build()
 }
 
-func (e *Engine) renderReasoningCard() *Card {
-	switcher, ok := e.agent.(ReasoningEffortSwitcher)
+func (e *Engine) renderReasoningCard(sessionKey string) *Card {
+	agent := e.agent
+	if sessionKey != "" {
+		agent, _ = e.sessionContextForKey(sessionKey)
+	}
+
+	switcher, ok := agent.(ReasoningEffortSwitcher)
 	if !ok {
 		return e.simpleCard(e.i18n.T(MsgCardTitleReasoning), "orange", e.i18n.T(MsgReasoningNotSupported))
 	}
 
-	efforts := switcher.AvailableReasoningEfforts()
+	efforts, _ := e.reasoningEffortOptions(agent, nil)
 	current := switcher.GetReasoningEffort()
 
 	var sb strings.Builder
