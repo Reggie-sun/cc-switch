@@ -9704,20 +9704,16 @@ func parseModelSwitchArgs(args []string) (string, bool) {
 // switchModel applies a runtime model selection to the global engine agent and
 // persists the change so reloads keep the selected default.
 func (e *Engine) switchModel(target string) (string, error) {
-	return e.switchModelOnAgent(e.agent, target, true)
+	return e.switchModelOnAgent(e.agent, target, true, nil)
 }
 
 // switchModelOnAgent applies a runtime model selection to the provided agent.
 // When persistConfig is true, config-backed model/provider changes are saved so
 // reloads keep the new default. Workspace-scoped runtime switches pass false.
-func (e *Engine) switchModelOnAgent(agent Agent, target string, persistConfig bool, knownCatalog ...[]ModelOption) (string, error) {
+func (e *Engine) switchModelOnAgent(agent Agent, target string, persistConfig bool, knownModels []ModelOption) (string, error) {
 	switcher, ok := agent.(ModelSwitcher)
 	if !ok {
 		return target, nil
-	}
-	var knownModels []ModelOption
-	if len(knownCatalog) > 0 {
-		knownModels = knownCatalog[0]
 	}
 
 	providerSwitcher, ok := agent.(ProviderSwitcher)
@@ -9728,7 +9724,7 @@ func (e *Engine) switchModelOnAgent(agent Agent, target string, persistConfig bo
 			}
 		}
 		switcher.SetModel(target)
-		e.reconcileReasoningEffortForModel(agent, knownModels)
+		e.reconcileReasoningEffortForModel(agent, target, knownModels)
 		return target, nil
 	}
 	active := providerSwitcher.GetActiveProvider()
@@ -9739,7 +9735,7 @@ func (e *Engine) switchModelOnAgent(agent Agent, target string, persistConfig bo
 			}
 		}
 		switcher.SetModel(target)
-		e.reconcileReasoningEffortForModel(agent, knownModels)
+		e.reconcileReasoningEffortForModel(agent, target, knownModels)
 		return target, nil
 	}
 
@@ -9747,12 +9743,12 @@ func (e *Engine) switchModelOnAgent(agent Agent, target string, persistConfig bo
 	updated, found := SetProviderModel(providers, active.Name, target)
 	if !found {
 		switcher.SetModel(target)
-		e.reconcileReasoningEffortForModel(agent, knownModels)
+		e.reconcileReasoningEffortForModel(agent, target, knownModels)
 		return target, nil
 	}
 	if !persistConfig {
 		switcher.SetModel(target)
-		e.reconcileReasoningEffortForModel(agent, knownModels)
+		e.reconcileReasoningEffortForModel(agent, target, knownModels)
 		return target, nil
 	}
 	if persistConfig && e.providerModelSaveFunc != nil {
@@ -9763,7 +9759,7 @@ func (e *Engine) switchModelOnAgent(agent Agent, target string, persistConfig bo
 	providerSwitcher.SetProviders(updated)
 	switcher.SetModel(target)
 	providerSwitcher.SetActiveProvider(active.Name)
-	e.reconcileReasoningEffortForModel(agent, knownModels)
+	e.reconcileReasoningEffortForModel(agent, target, knownModels)
 	return target, nil
 }
 
@@ -9791,6 +9787,14 @@ func reasoningEffortTarget(input string, efforts []string) (string, bool) {
 }
 
 func (e *Engine) reasoningEffortOptions(agent Agent, known []ModelOption) ([]string, string) {
+	modelName := ""
+	if modelSwitcher, ok := agent.(ModelSwitcher); ok {
+		modelName = modelSwitcher.GetModel()
+	}
+	return e.reasoningEffortOptionsForModel(agent, known, modelName)
+}
+
+func (e *Engine) reasoningEffortOptionsForModel(agent Agent, known []ModelOption, modelName string) ([]string, string) {
 	reasoningSwitcher, ok := agent.(ReasoningEffortSwitcher)
 	if !ok {
 		return nil, ""
@@ -9810,7 +9814,7 @@ func (e *Engine) reasoningEffortOptions(agent Agent, known []ModelOption) ([]str
 		cancel()
 	}
 	for _, model := range models {
-		if !strings.EqualFold(strings.TrimSpace(model.Name), strings.TrimSpace(modelSwitcher.GetModel())) {
+		if !strings.EqualFold(strings.TrimSpace(model.Name), strings.TrimSpace(modelName)) {
 			continue
 		}
 		efforts := fallback
@@ -9846,12 +9850,12 @@ func (e *Engine) applyReasoningEffort(agent Agent, sessions *SessionManager, ses
 	return target, true
 }
 
-func (e *Engine) reconcileReasoningEffortForModel(agent Agent, knownModels []ModelOption) {
+func (e *Engine) reconcileReasoningEffortForModel(agent Agent, modelName string, knownModels []ModelOption) {
 	switcher, ok := agent.(ReasoningEffortSwitcher)
 	if !ok {
 		return
 	}
-	efforts, defaultEffort := e.reasoningEffortOptions(agent, knownModels)
+	efforts, defaultEffort := e.reasoningEffortOptionsForModel(agent, knownModels, modelName)
 	current := strings.ToLower(strings.TrimSpace(switcher.GetReasoningEffort()))
 	if current == "" {
 		return
@@ -12189,9 +12193,13 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 			return
 		}
 		target = strings.TrimSpace(target)
+		var knownModels []ModelOption
 		if modelSwitchNeedsLookup(target) {
-			models := switcher.AvailableModels(fetchCtx)
-			target = resolveModelSwitchTarget(target, models)
+			knownModels = switcher.AvailableModels(fetchCtx)
+			if knownModels == nil {
+				knownModels = []ModelOption{}
+			}
+			target = resolveModelSwitchTarget(target, knownModels)
 		}
 		cancel()
 		e.cleanupInteractiveState(interactiveKey)
@@ -12205,7 +12213,7 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		state.mu.Lock()
 		state.modelSwitch = &modelSwitchState{phase: "switching", target: target}
 		state.mu.Unlock()
-		go e.performModelSwitchAsync(sessionKey, state, agent, sessions, target)
+		go e.performModelSwitchAsync(sessionKey, state, agent, sessions, target, knownModels)
 
 	case "/reasoning":
 		if args == "" {
@@ -12712,8 +12720,8 @@ func (e *Engine) pushDeleteModeResultCard(sessionKey string) {
 	e.sendWithCard(targetPlatform, rctx, card)
 }
 
-func (e *Engine) performModelSwitchAsync(sessionKey string, state *interactiveState, agent Agent, sessions *SessionManager, target string) {
-	resolved, err := e.switchModelOnAgent(agent, target, agent == e.agent)
+func (e *Engine) performModelSwitchAsync(sessionKey string, state *interactiveState, agent Agent, sessions *SessionManager, target string, knownModels []ModelOption) {
+	resolved, err := e.switchModelOnAgent(agent, target, agent == e.agent, knownModels)
 	if err == nil {
 		interactiveKey := e.interactiveKeyForSessionKey(sessionKey)
 		e.persistWorkspaceModelOverride(interactiveKey, sessionKey, agent, resolved)

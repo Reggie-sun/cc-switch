@@ -467,6 +467,10 @@ type stubStrictModelAgent struct {
 	calls  int
 }
 
+type stubProviderFirstModelAgent struct {
+	stubStrictModelAgent
+}
+
 type stubLiveModeSession struct {
 	stubAgentSession
 	modes []string
@@ -495,6 +499,17 @@ func (a *stubModelModeAgent) AvailableModels(_ context.Context) []ModelOption {
 func (a *stubStrictModelAgent) AvailableModels(_ context.Context) []ModelOption {
 	a.calls++
 	return append([]ModelOption(nil), a.models...)
+}
+
+func (a *stubProviderFirstModelAgent) GetModel() string {
+	activeIdx := -1
+	for i := range a.providers {
+		if a.providers[i].Name == a.active {
+			activeIdx = i
+			break
+		}
+	}
+	return GetProviderModel(a.providers, activeIdx, a.model)
 }
 
 func (a *stubModelModeAgent) SetProviders(providers []ProviderConfig) {
@@ -4593,7 +4608,7 @@ func TestSwitchModelOnAgent_ReconcilesReasoningWithoutResettingSession(t *testin
 			s.SetAgentSessionID("existing-session", "test")
 			s.AddHistory("user", "hello")
 
-			gotModel, err := e.switchModelOnAgent(agent, "gpt-5.6-luna", false)
+			gotModel, err := e.switchModelOnAgent(agent, "gpt-5.6-luna", false, nil)
 			if err != nil {
 				t.Fatalf("switchModelOnAgent: %v", err)
 			}
@@ -4610,6 +4625,54 @@ func TestSwitchModelOnAgent_ReconcilesReasoningWithoutResettingSession(t *testin
 				t.Fatalf("history length = %d, want preserved 1", got)
 			}
 		})
+	}
+}
+
+func TestSwitchModelOnAgent_ReconcilesAgainstExplicitTargetWithProviderFirstModel(t *testing.T) {
+	catalog := []ModelOption{
+		{
+			Name:                   "gpt-5.6-sol",
+			DefaultReasoningEffort: "low",
+			ReasoningEfforts:       []string{"low", "medium", "high", "xhigh", "max", "ultra"},
+		},
+		{
+			Name:                   "gpt-5.6-luna",
+			DefaultReasoningEffort: "medium",
+			ReasoningEfforts:       []string{"low", "medium", "high", "xhigh", "max"},
+		},
+	}
+	agent := &stubProviderFirstModelAgent{stubStrictModelAgent: stubStrictModelAgent{
+		stubModelModeAgent: stubModelModeAgent{
+			model:           "gpt-5.6-sol",
+			reasoningEffort: "ultra",
+			providers: []ProviderConfig{{
+				Name:  "openai",
+				Model: "gpt-5.6-sol",
+			}},
+			active: "openai",
+		},
+		models: catalog,
+	}}
+	e := NewEngine("test", agent, nil, "", LangEnglish)
+	s := e.sessions.GetOrCreateActive("test:user1")
+	s.SetAgentSessionID("existing-session", "test")
+	s.AddHistory("user", "hello")
+
+	gotModel, err := e.switchModelOnAgent(agent, "gpt-5.6-luna", false, catalog)
+	if err != nil {
+		t.Fatalf("switchModelOnAgent: %v", err)
+	}
+	if gotModel != "gpt-5.6-luna" || agent.model != "gpt-5.6-luna" {
+		t.Fatalf("model result/runtime = %q/%q, want gpt-5.6-luna", gotModel, agent.model)
+	}
+	if got := agent.GetReasoningEffort(); got != "medium" {
+		t.Fatalf("reasoning effort = %q, want Luna default medium", got)
+	}
+	if got := s.GetAgentSessionID(); got != "existing-session" {
+		t.Fatalf("AgentSessionID = %q, want preserved", got)
+	}
+	if got := s.HistoryLen(); got != 1 {
+		t.Fatalf("history length = %d, want preserved 1", got)
 	}
 }
 
@@ -9865,6 +9928,56 @@ func TestHandleCardNav_ReasoningActionsUseWorkspaceContext(t *testing.T) {
 				t.Fatalf("global history length = %d, want preserved 1", got)
 			}
 		})
+	}
+}
+
+func TestExecuteCardAction_ModelReusesCatalogForAsyncReconciliation(t *testing.T) {
+	agent := &stubStrictModelAgent{
+		stubModelModeAgent: stubModelModeAgent{
+			model:           "gpt-5.6-sol",
+			reasoningEffort: "ultra",
+		},
+		models: []ModelOption{
+			{
+				Name:                   "gpt-5.6-sol",
+				DefaultReasoningEffort: "low",
+				ReasoningEfforts:       []string{"low", "medium", "high", "xhigh", "max", "ultra"},
+			},
+			{
+				Name:                   "gpt-5.6-luna",
+				DefaultReasoningEffort: "medium",
+				ReasoningEfforts:       []string{"low", "medium", "high", "xhigh", "max"},
+			},
+		},
+	}
+	p := &stubCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+	sessionKey := "feishu:channel1:user1"
+
+	e.executeCardAction("/model", "switch 2", sessionKey)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		e.interactiveMu.Lock()
+		_, exists := e.interactiveStates[sessionKey]
+		e.interactiveMu.Unlock()
+		if !exists {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for async model switch")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if got := agent.GetModel(); got != "gpt-5.6-luna" {
+		t.Fatalf("model = %q, want gpt-5.6-luna", got)
+	}
+	if got := agent.GetReasoningEffort(); got != "medium" {
+		t.Fatalf("reasoning effort = %q, want Luna default medium", got)
+	}
+	if agent.calls != 1 {
+		t.Fatalf("AvailableModels calls = %d, want one catalog query shared by resolution and reconciliation", agent.calls)
 	}
 }
 
