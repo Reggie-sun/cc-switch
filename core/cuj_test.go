@@ -52,6 +52,10 @@ type cujAgent struct {
 	sessions []*cujAgentSession
 	nextID   int
 
+	model           string
+	reasoningEffort string
+	models          []ModelOption
+
 	// failStartCount lets tests simulate "agent process won't start" — the
 	// next N StartSession calls return failStartErr. Set both > 0 to use.
 	// When the count hits 0, StartSession resumes normal behavior, which
@@ -69,6 +73,40 @@ type cujAgent struct {
 }
 
 func (a *cujAgent) Name() string { return "cuj" }
+
+func (a *cujAgent) SetModel(model string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.model = model
+}
+
+func (a *cujAgent) GetModel() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.model
+}
+
+func (a *cujAgent) AvailableModels(context.Context) []ModelOption {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]ModelOption(nil), a.models...)
+}
+
+func (a *cujAgent) SetReasoningEffort(effort string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.reasoningEffort = effort
+}
+
+func (a *cujAgent) GetReasoningEffort() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.reasoningEffort
+}
+
+func (a *cujAgent) AvailableReasoningEfforts() []string {
+	return []string{"low", "medium", "high", "xhigh"}
+}
 
 func (a *cujAgent) StartSession(_ context.Context, _ string) (AgentSession, error) {
 	a.mu.Lock()
@@ -1739,9 +1777,58 @@ func TestCUJ_F1_ProviderSwitchLinkedToAgent(t *testing.T) {
 	t.Log("CUJ-F1: provider switching is per-agent; covered by agent/*_test.go provider tests")
 }
 
-// CUJ-F2 · /model switches model — same pattern as F1, agent-managed.
-func TestCUJ_F2_ModelSwitchLinkedToAgent(t *testing.T) {
-	t.Log("CUJ-F2: model switching is per-agent; covered by agent/*_test.go model tests")
+// CUJ-F2 · /model exposes model-specific reasoning efforts and keeps
+// /reasoning compatible after a model switch.
+func TestCUJ_F2_ModelAndReasoningMapping(t *testing.T) {
+	env := newCUJEnv(t)
+	env.agent.model = "gpt-5.6-sol"
+	env.agent.reasoningEffort = "high"
+	env.agent.models = []ModelOption{
+		{
+			Name:                   "gpt-5.6-sol",
+			DefaultReasoningEffort: "low",
+			ReasoningEfforts:       []string{"low", "medium", "high", "xhigh", "max", "ultra"},
+		},
+		{
+			Name:                   "gpt-5.6-luna",
+			DefaultReasoningEffort: "medium",
+			ReasoningEfforts:       []string{"low", "medium", "high", "xhigh", "max"},
+		},
+	}
+
+	env.userSends("f2", "/model")
+	env.waitFor("model list", 2*time.Second, func() bool { return len(env.plat.getSent()) >= 1 })
+	if got := env.plat.getSent()[0]; !strings.Contains(got, "gpt-5.6-sol") ||
+		!strings.Contains(got, "gpt-5.6-luna") ||
+		!strings.Contains(got, "/model effort <effort>") {
+		t.Fatalf("model list lacks models or effort guidance: %q", got)
+	}
+
+	env.plat.clearSent()
+	env.userSends("f2", "/model effort ultra")
+	env.waitFor("effort switch", 2*time.Second, func() bool { return len(env.plat.getSent()) >= 1 })
+	if got := env.plat.getSent()[0]; !strings.Contains(got, "ultra") {
+		t.Fatalf("effort switch reply = %q, want canonical ultra", got)
+	}
+
+	env.plat.clearSent()
+	env.userSends("f2", "/model switch 2")
+	env.waitFor("model switch", 2*time.Second, func() bool { return len(env.plat.getSent()) >= 1 })
+	if got := env.plat.getSent()[0]; !strings.Contains(got, "gpt-5.6-luna") {
+		t.Fatalf("model switch reply = %q, want Luna", got)
+	}
+	if model, effort := env.agent.GetModel(), env.agent.GetReasoningEffort(); model != "gpt-5.6-luna" || effort != "medium" {
+		t.Fatalf("model=%q effort=%q, want Luna/medium", model, effort)
+	}
+
+	env.plat.clearSent()
+	env.userSends("f2", "/reasoning")
+	env.waitFor("reasoning list", 2*time.Second, func() bool { return len(env.plat.getSent()) >= 1 })
+	got := env.plat.getSent()[0]
+	available := strings.SplitN(got, "\n\nUsage:", 2)[0]
+	if !strings.Contains(available, "max") || strings.Contains(available, "ultra") {
+		t.Fatalf("Luna reasoning list = %q, want max without ultra", available)
+	}
 }
 
 // CUJ-F3 · /lang switches i18n locale; next reply uses new language.
@@ -2325,4 +2412,3 @@ func TestCUJ_STREAM1_StreamingResumesAfterPermissionPrompt(t *testing.T) {
 		}
 	}
 }
-
