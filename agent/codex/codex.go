@@ -196,8 +196,12 @@ func normalizeReasoningEffort(raw string) string {
 		return "medium"
 	case "high":
 		return "high"
-	case "xhigh", "x-high", "very-high":
+	case "xhigh", "x-high", "very-high", "xhgh":
 		return "xhigh"
+	case "max":
+		return "max"
+	case "ultra", "urtal":
+		return "ultra"
 	default:
 		return ""
 	}

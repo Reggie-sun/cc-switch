@@ -30,13 +30,17 @@ developer_instructions = "Review only."
 }
 
 func TestAgentSetRoleAppliesProfile(t *testing.T) {
-	a := &Agent{model: "gpt-5.6-terra", reasoningEffort: "high", mode: "yolo", roles: []roleProfile{{
-		Name: "reviewer", Model: "gpt-5.6-sol", ReasoningEffort: "medium", DeveloperInstructions: "Review only.",
-	}}}
-	if err := a.SetRole("reviewer"); err != nil {
-		t.Fatal(err)
-	}
-	if a.GetRole() != "reviewer" || a.GetModel() != "gpt-5.6-sol" || a.GetReasoningEffort() != "medium" || a.mode != "yolo" {
-		t.Fatalf("role=%q model=%q effort=%q mode=%q", a.GetRole(), a.GetModel(), a.GetReasoningEffort(), a.mode)
+	for _, effort := range []string{"medium", "max", "ultra"} {
+		t.Run(effort, func(t *testing.T) {
+			a := &Agent{model: "gpt-5.6-terra", reasoningEffort: "high", mode: "yolo", roles: []roleProfile{{
+				Name: "reviewer", Model: "gpt-5.6-sol", ReasoningEffort: effort, DeveloperInstructions: "Review only.",
+			}}}
+			if err := a.SetRole("reviewer"); err != nil {
+				t.Fatal(err)
+			}
+			if a.GetRole() != "reviewer" || a.GetModel() != "gpt-5.6-sol" || a.GetReasoningEffort() != effort || a.mode != "yolo" {
+				t.Fatalf("role=%q model=%q effort=%q mode=%q", a.GetRole(), a.GetModel(), a.GetReasoningEffort(), a.mode)
+			}
+		})
 	}
 }

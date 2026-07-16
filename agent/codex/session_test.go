@@ -23,6 +23,34 @@ func TestNormalizeReasoningEffort_RejectsMinimal(t *testing.T) {
 	}
 }
 
+func TestNormalizeReasoningEffort_CanonicalAndAliases(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "low", raw: "low", want: "low"},
+		{name: "medium", raw: "medium", want: "medium"},
+		{name: "high", raw: "high", want: "high"},
+		{name: "xhigh", raw: "xhigh", want: "xhigh"},
+		{name: "max", raw: "max", want: "max"},
+		{name: "ultra", raw: "ultra", want: "ultra"},
+		{name: "med alias", raw: "med", want: "medium"},
+		{name: "x-high alias", raw: "x-high", want: "xhigh"},
+		{name: "very-high alias", raw: "very-high", want: "xhigh"},
+		{name: "xhgh alias", raw: "xhgh", want: "xhigh"},
+		{name: "urtal alias", raw: "urtal", want: "ultra"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeReasoningEffort(tc.raw); got != tc.want {
+				t.Fatalf("normalizeReasoningEffort(%q) = %q, want %q", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestAvailableReasoningEfforts_ExcludesMinimal(t *testing.T) {
 	agent := &Agent{}
 	got := agent.AvailableReasoningEfforts()
@@ -68,6 +96,23 @@ func TestBuildExecArgs_IncludesReasoningEffort(t *testing.T) {
 		if args[i] != want[i] {
 			t.Fatalf("args[%d] = %q, want %q, args=%v", i, args[i], want[i], args)
 		}
+	}
+}
+
+func TestBuildExecArgs_PreservesExtendedReasoningEffort(t *testing.T) {
+	for _, effort := range []string{"max", "ultra"} {
+		t.Run(effort, func(t *testing.T) {
+			cs, err := newCodexSession(context.Background(), "codex", nil, "/tmp/project", "gpt-5.4", normalizeReasoningEffort(effort), "full-auto", "", "", nil, "", "", "")
+			if err != nil {
+				t.Fatalf("newCodexSession: %v", err)
+			}
+
+			args := cs.buildExecArgs("hello", nil)
+			want := `model_reasoning_effort="` + effort + `"`
+			if !containsSequence(args, []string{"-c", want}) {
+				t.Fatalf("args missing exact reasoning effort config %q: %v", want, args)
+			}
+		})
 	}
 }
 
