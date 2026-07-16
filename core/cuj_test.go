@@ -1825,9 +1825,42 @@ func TestCUJ_F2_ModelAndReasoningMapping(t *testing.T) {
 	env.userSends("f2", "/reasoning")
 	env.waitFor("reasoning list", 2*time.Second, func() bool { return len(env.plat.getSent()) >= 1 })
 	got := env.plat.getSent()[0]
-	available := strings.SplitN(got, "\n\nUsage:", 2)[0]
+	usage := env.engine.i18n.T(MsgReasoningUsage)
+	available, _, found := strings.Cut(got, "\n\n"+usage)
+	if !found {
+		t.Fatalf("reasoning reply = %q, want translated usage boundary %q", got, usage)
+	}
 	if !strings.Contains(available, "max") || strings.Contains(available, "ultra") {
 		t.Fatalf("Luna reasoning list = %q, want max without ultra", available)
+	}
+}
+
+func TestReasoningUsageQualifiesModelSpecificAvailability(t *testing.T) {
+	const canonicalLevels = "low|medium|high|xhigh|max|ultra"
+	tests := []struct {
+		lang          Language
+		wantQualifier string
+	}{
+		{LangEnglish, "Available values depend on the current model."},
+		{LangChinese, "可用值取决于当前模型。"},
+		{LangTraditionalChinese, "可用值取決於當前模型。"},
+		{LangJapanese, "利用可能な値は現在のモデルによって異なります。"},
+		{LangSpanish, "Los valores disponibles dependen del modelo actual."},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.lang), func(t *testing.T) {
+			usage := NewI18n(tt.lang).T(MsgReasoningUsage)
+			if strings.Count(usage, canonicalLevels) != 1 {
+				t.Fatalf("usage = %q, want exactly one canonical level list", usage)
+			}
+			if strings.Contains(usage, "xhgh") || strings.Contains(usage, "urtal") {
+				t.Fatalf("usage advertises a spelling alias: %q", usage)
+			}
+			if !strings.Contains(usage, tt.wantQualifier) {
+				t.Fatalf("usage = %q, want qualifier %q", usage, tt.wantQualifier)
+			}
+		})
 	}
 }
 

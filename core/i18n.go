@@ -2493,11 +2493,11 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "Niveles de razonamiento disponibles:\n",
 	},
 	MsgReasoningUsage: {
-		LangEnglish:            "Usage: `/reasoning <number>` or `/reasoning <low|medium|high|xhigh|max|ultra>`",
-		LangChinese:            "用法: `/reasoning <序号>` 或 `/reasoning <low|medium|high|xhigh|max|ultra>`",
-		LangTraditionalChinese: "用法: `/reasoning <序號>` 或 `/reasoning <low|medium|high|xhigh|max|ultra>`",
-		LangJapanese:           "使い方: `/reasoning <番号>` または `/reasoning <low|medium|high|xhigh|max|ultra>`",
-		LangSpanish:            "Uso: `/reasoning <número>` o `/reasoning <low|medium|high|xhigh|max|ultra>`",
+		LangEnglish:            "Usage: `/reasoning <number>` or `/reasoning <low|medium|high|xhigh|max|ultra>`. Available values depend on the current model.",
+		LangChinese:            "用法: `/reasoning <序号>` 或 `/reasoning <low|medium|high|xhigh|max|ultra>`。可用值取决于当前模型。",
+		LangTraditionalChinese: "用法: `/reasoning <序號>` 或 `/reasoning <low|medium|high|xhigh|max|ultra>`。可用值取決於當前模型。",
+		LangJapanese:           "使い方: `/reasoning <番号>` または `/reasoning <low|medium|high|xhigh|max|ultra>`。利用可能な値は現在のモデルによって異なります。",
+		LangSpanish:            "Uso: `/reasoning <número>` o `/reasoning <low|medium|high|xhigh|max|ultra>`. Los valores disponibles dependen del modelo actual.",
 	},
 	MsgModeUsage: {
 		LangEnglish:            "\nUse `/mode <name>` to switch.\nAvailable: %s",
