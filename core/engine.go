@@ -9468,6 +9468,19 @@ func (e *Engine) cmdModel(p Platform, msg *Message, args []string) {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
 		return
 	}
+	if len(args) > 0 && strings.EqualFold(strings.TrimSpace(args[0]), "effort") {
+		if len(args) != 2 {
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReasoningUsage))
+			return
+		}
+		target, ok := e.applyReasoningEffort(agent, sessions, msg.SessionKey, args[1])
+		if !ok {
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReasoningUsage))
+			return
+		}
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReasoningChanged, target))
+		return
+	}
 
 	switcher, ok := agent.(ModelSwitcher)
 	if !ok {
@@ -9542,14 +9555,18 @@ func (e *Engine) cmdModel(p Platform, msg *Message, args []string) {
 	}
 
 	target := strings.TrimSpace(targetInput)
+	var knownModels []ModelOption
 	if modelSwitchNeedsLookup(target) {
 		fetchCtx, cancel := context.WithTimeout(e.ctx, 10*time.Second)
 		defer cancel()
-		models := switcher.AvailableModels(fetchCtx)
-		target = resolveModelSwitchTarget(target, models)
+		knownModels = switcher.AvailableModels(fetchCtx)
+		if knownModels == nil {
+			knownModels = []ModelOption{}
+		}
+		target = resolveModelSwitchTarget(target, knownModels)
 	}
 
-	target, err = e.switchModelOnAgent(agent, target, agent == e.agent)
+	target, err = e.switchModelOnAgent(agent, target, agent == e.agent, knownModels)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgModelChangeFailed, err))
 		return
@@ -9693,10 +9710,14 @@ func (e *Engine) switchModel(target string) (string, error) {
 // switchModelOnAgent applies a runtime model selection to the provided agent.
 // When persistConfig is true, config-backed model/provider changes are saved so
 // reloads keep the new default. Workspace-scoped runtime switches pass false.
-func (e *Engine) switchModelOnAgent(agent Agent, target string, persistConfig bool) (string, error) {
+func (e *Engine) switchModelOnAgent(agent Agent, target string, persistConfig bool, knownCatalog ...[]ModelOption) (string, error) {
 	switcher, ok := agent.(ModelSwitcher)
 	if !ok {
 		return target, nil
+	}
+	var knownModels []ModelOption
+	if len(knownCatalog) > 0 {
+		knownModels = knownCatalog[0]
 	}
 
 	providerSwitcher, ok := agent.(ProviderSwitcher)
@@ -9707,6 +9728,7 @@ func (e *Engine) switchModelOnAgent(agent Agent, target string, persistConfig bo
 			}
 		}
 		switcher.SetModel(target)
+		e.reconcileReasoningEffortForModel(agent, knownModels)
 		return target, nil
 	}
 	active := providerSwitcher.GetActiveProvider()
@@ -9717,6 +9739,7 @@ func (e *Engine) switchModelOnAgent(agent Agent, target string, persistConfig bo
 			}
 		}
 		switcher.SetModel(target)
+		e.reconcileReasoningEffortForModel(agent, knownModels)
 		return target, nil
 	}
 
@@ -9724,10 +9747,12 @@ func (e *Engine) switchModelOnAgent(agent Agent, target string, persistConfig bo
 	updated, found := SetProviderModel(providers, active.Name, target)
 	if !found {
 		switcher.SetModel(target)
+		e.reconcileReasoningEffortForModel(agent, knownModels)
 		return target, nil
 	}
 	if !persistConfig {
 		switcher.SetModel(target)
+		e.reconcileReasoningEffortForModel(agent, knownModels)
 		return target, nil
 	}
 	if persistConfig && e.providerModelSaveFunc != nil {
@@ -9738,6 +9763,7 @@ func (e *Engine) switchModelOnAgent(agent Agent, target string, persistConfig bo
 	providerSwitcher.SetProviders(updated)
 	switcher.SetModel(target)
 	providerSwitcher.SetActiveProvider(active.Name)
+	e.reconcileReasoningEffortForModel(agent, knownModels)
 	return target, nil
 }
 
@@ -9800,6 +9826,46 @@ func (e *Engine) reasoningEffortOptions(agent Agent, known []ModelOption) ([]str
 	return fallback, ""
 }
 
+func (e *Engine) applyReasoningEffort(agent Agent, sessions *SessionManager, sessionKey, input string) (string, bool) {
+	switcher, ok := agent.(ReasoningEffortSwitcher)
+	if !ok {
+		return "", false
+	}
+	efforts, _ := e.reasoningEffortOptions(agent, nil)
+	target, ok := reasoningEffortTarget(input, efforts)
+	if !ok {
+		return "", false
+	}
+
+	switcher.SetReasoningEffort(target)
+	e.cleanupInteractiveState(e.interactiveKeyForSessionKey(sessionKey))
+	s := sessions.GetOrCreateActive(sessionKey)
+	s.SetAgentSessionID("", "")
+	s.ClearHistory()
+	sessions.Save()
+	return target, true
+}
+
+func (e *Engine) reconcileReasoningEffortForModel(agent Agent, knownModels []ModelOption) {
+	switcher, ok := agent.(ReasoningEffortSwitcher)
+	if !ok {
+		return
+	}
+	efforts, defaultEffort := e.reasoningEffortOptions(agent, knownModels)
+	current := strings.ToLower(strings.TrimSpace(switcher.GetReasoningEffort()))
+	if current == "" {
+		return
+	}
+	if _, ok := reasoningEffortTarget(current, efforts); ok {
+		return
+	}
+	if target, ok := reasoningEffortTarget(defaultEffort, efforts); ok {
+		switcher.SetReasoningEffort(target)
+		return
+	}
+	switcher.SetReasoningEffort("")
+}
+
 func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 	agent, sessions, _, err := e.commandContext(p, msg)
 	if err != nil {
@@ -9815,7 +9881,7 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 
 	if len(args) == 0 {
 		if !supportsCards(p) {
-			efforts := switcher.AvailableReasoningEfforts()
+			efforts, _ := e.reasoningEffortOptions(agent, nil)
 
 			var sb strings.Builder
 			current := switcher.GetReasoningEffort()
@@ -9858,31 +9924,11 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 		return
 	}
 
-	efforts := switcher.AvailableReasoningEfforts()
-	target := strings.ToLower(strings.TrimSpace(args[0]))
-	if idx, err := strconv.Atoi(target); err == nil && idx >= 1 && idx <= len(efforts) {
-		target = efforts[idx-1]
-	}
-
-	valid := false
-	for _, effort := range efforts {
-		if effort == target {
-			valid = true
-			break
-		}
-	}
-	if !valid {
+	target, ok := e.applyReasoningEffort(agent, sessions, msg.SessionKey, args[0])
+	if !ok {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReasoningUsage))
 		return
 	}
-
-	switcher.SetReasoningEffort(target)
-	e.cleanupInteractiveState(e.interactiveKeyForSessionKey(msg.SessionKey))
-
-	s := sessions.GetOrCreateActive(msg.SessionKey)
-	s.SetAgentSessionID("", "")
-	s.ClearHistory()
-	sessions.Save()
 
 	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReasoningChanged, target))
 }
@@ -12042,24 +12088,38 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 
 func (e *Engine) handleModelCardAction(args, sessionKey string) *Card {
 	agent, sessions := e.sessionContextForKey(sessionKey)
+	fields := strings.Fields(args)
+	if len(fields) > 0 && strings.EqualFold(fields[0], "effort") {
+		if len(fields) != 2 {
+			return e.simpleCard(e.i18n.T(MsgCardTitleModel), "indigo", e.i18n.T(MsgReasoningUsage))
+		}
+		if _, ok := e.applyReasoningEffort(agent, sessions, sessionKey, fields[1]); !ok {
+			return e.simpleCard(e.i18n.T(MsgCardTitleModel), "indigo", e.i18n.T(MsgReasoningUsage))
+		}
+		return e.renderModelCard(sessionKey)
+	}
 	switcher, ok := agent.(ModelSwitcher)
 	if !ok {
 		return e.simpleCard(e.i18n.T(MsgCardTitleModel), "indigo", e.i18n.T(MsgModelNotSupported))
 	}
 
-	target, ok := parseModelSwitchArgs(strings.Fields(args))
+	target, ok := parseModelSwitchArgs(fields)
 	if !ok {
 		return e.renderModelCard(sessionKey)
 	}
 	target = strings.TrimSpace(target)
+	var knownModels []ModelOption
 	if modelSwitchNeedsLookup(target) {
 		fetchCtx, cancel := context.WithTimeout(e.ctx, 3*time.Second)
-		models := switcher.AvailableModels(fetchCtx)
-		target = resolveModelSwitchTarget(target, models)
+		knownModels = switcher.AvailableModels(fetchCtx)
+		if knownModels == nil {
+			knownModels = []ModelOption{}
+		}
+		target = resolveModelSwitchTarget(target, knownModels)
 		cancel()
 	}
 
-	resolved, err := e.switchModelOnAgent(agent, target, agent == e.agent)
+	resolved, err := e.switchModelOnAgent(agent, target, agent == e.agent, knownModels)
 	interactiveKey := e.interactiveKeyForSessionKey(sessionKey)
 	if err == nil {
 		e.persistWorkspaceModelOverride(interactiveKey, sessionKey, agent, resolved)
@@ -12151,26 +12211,8 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		if args == "" {
 			return
 		}
-		switcher, ok := e.agent.(ReasoningEffortSwitcher)
-		if !ok {
-			return
-		}
-		efforts := switcher.AvailableReasoningEfforts()
-		target := strings.ToLower(strings.TrimSpace(args))
-		if idx, err := strconv.Atoi(target); err == nil && idx >= 1 && idx <= len(efforts) {
-			target = efforts[idx-1]
-		}
-		for _, effort := range efforts {
-			if effort == target {
-				switcher.SetReasoningEffort(target)
-				e.cleanupInteractiveState(interactiveKey)
-				s := e.sessions.GetOrCreateActive(sessionKey)
-				s.SetAgentSessionID("", "")
-				s.ClearHistory()
-				e.sessions.Save()
-				return
-			}
-		}
+		agent, sessions := e.sessionContextForKey(sessionKey)
+		e.applyReasoningEffort(agent, sessions, sessionKey, args)
 
 	case "/mode":
 		if args == "" {

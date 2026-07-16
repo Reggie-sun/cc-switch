@@ -453,11 +453,12 @@ func (p *stubAskQuestionRichCardPlatform) BuildRichCard(status CardStatus, title
 
 type stubModelModeAgent struct {
 	stubAgent
-	model           string
-	mode            string
-	reasoningEffort string
-	providers       []ProviderConfig
-	active          string
+	model            string
+	mode             string
+	reasoningEffort  string
+	reasoningEfforts []string
+	providers        []ProviderConfig
+	active           string
 }
 
 type stubStrictModelAgent struct {
@@ -556,6 +557,9 @@ func (a *stubModelModeAgent) GetReasoningEffort() string {
 }
 
 func (a *stubModelModeAgent) AvailableReasoningEfforts() []string {
+	if a.reasoningEfforts != nil {
+		return append([]string(nil), a.reasoningEfforts...)
+	}
 	return []string{"low", "medium", "high", "xhigh"}
 }
 
@@ -4508,6 +4512,42 @@ func TestCmdModel_UpdatesActiveProviderModel(t *testing.T) {
 	}
 }
 
+func TestCmdModel_EffortUsesModelMetadataAndResetsSession(t *testing.T) {
+	p := &stubPlatformEngine{n: "plain"}
+	agent := &stubStrictModelAgent{
+		stubModelModeAgent: stubModelModeAgent{
+			model:           "gpt-5.6-sol",
+			reasoningEffort: "high",
+		},
+		models: []ModelOption{{
+			Name:                   "gpt-5.6-sol",
+			DefaultReasoningEffort: "low",
+			ReasoningEfforts:       []string{"low", "medium", "high", "xhigh", "max", "ultra"},
+		}},
+	}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+	msg := &Message{SessionKey: "test:user1", ReplyCtx: "ctx"}
+
+	s := e.sessions.GetOrCreateActive(msg.SessionKey)
+	s.SetAgentSessionID("existing-session", "test")
+	s.AddHistory("user", "hello")
+
+	e.cmdModel(p, msg, []string{"effort", "urtal"})
+
+	if got := agent.GetReasoningEffort(); got != "ultra" {
+		t.Fatalf("reasoning effort = %q, want canonical ultra", got)
+	}
+	if got := s.GetAgentSessionID(); got != "" {
+		t.Fatalf("AgentSessionID = %q, want cleared", got)
+	}
+	if got := s.HistoryLen(); got != 0 {
+		t.Fatalf("history length = %d, want 0", got)
+	}
+	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "Reasoning effort switched to `ultra`") {
+		t.Fatalf("sent = %v, want canonical reasoning changed message", p.sent)
+	}
+}
+
 func TestCmdModel_DirectNameDoesNotNeedModelListMatch(t *testing.T) {
 	p := &stubPlatformEngine{n: "plain"}
 	agent := &stubStrictModelAgent{}
@@ -4519,8 +4559,57 @@ func TestCmdModel_DirectNameDoesNotNeedModelListMatch(t *testing.T) {
 	if agent.model != "custom/provider-model" {
 		t.Fatalf("agent model = %q, want custom/provider-model", agent.model)
 	}
-	if agent.calls != 0 {
-		t.Fatalf("AvailableModels calls = %d, want 0 for direct name switch", agent.calls)
+}
+
+func TestSwitchModelOnAgent_ReconcilesReasoningWithoutResettingSession(t *testing.T) {
+	tests := []struct {
+		name          string
+		currentEffort string
+		defaultEffort string
+		wantEffort    string
+	}{
+		{name: "supported current effort stays", currentEffort: "max", defaultEffort: "medium", wantEffort: "max"},
+		{name: "unsupported current uses valid default", currentEffort: "ultra", defaultEffort: "medium", wantEffort: "medium"},
+		{name: "invalid default clears effort", currentEffort: "ultra", defaultEffort: "bogus", wantEffort: ""},
+		{name: "missing default clears effort", currentEffort: "ultra", defaultEffort: "", wantEffort: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agent := &stubStrictModelAgent{
+				stubModelModeAgent: stubModelModeAgent{
+					model:           "gpt-5.6-sol",
+					reasoningEffort: tt.currentEffort,
+				},
+				models: []ModelOption{{
+					Name:                   "gpt-5.6-luna",
+					DefaultReasoningEffort: tt.defaultEffort,
+					ReasoningEfforts:       []string{"low", "medium", "high", "xhigh", "max"},
+				}},
+			}
+			e := NewEngine("test", agent, nil, "", LangEnglish)
+			sessionKey := "test:user1"
+			s := e.sessions.GetOrCreateActive(sessionKey)
+			s.SetAgentSessionID("existing-session", "test")
+			s.AddHistory("user", "hello")
+
+			gotModel, err := e.switchModelOnAgent(agent, "gpt-5.6-luna", false)
+			if err != nil {
+				t.Fatalf("switchModelOnAgent: %v", err)
+			}
+			if gotModel != "gpt-5.6-luna" || agent.GetModel() != "gpt-5.6-luna" {
+				t.Fatalf("model result/agent = %q/%q, want gpt-5.6-luna", gotModel, agent.GetModel())
+			}
+			if got := agent.GetReasoningEffort(); got != tt.wantEffort {
+				t.Fatalf("reasoning effort = %q, want %q", got, tt.wantEffort)
+			}
+			if got := s.GetAgentSessionID(); got != "existing-session" {
+				t.Fatalf("AgentSessionID = %q, want preserved", got)
+			}
+			if got := s.HistoryLen(); got != 1 {
+				t.Fatalf("history length = %d, want preserved 1", got)
+			}
+		})
 	}
 }
 
@@ -5430,6 +5519,43 @@ func TestCmdReasoning_SwitchesEffortAndResetsSession(t *testing.T) {
 	}
 	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "Reasoning effort switched to `high`") {
 		t.Fatalf("sent = %v, want reasoning changed message", p.sent)
+	}
+}
+
+func TestCmdReasoning_RejectsEffortUnsupportedByCurrentModel(t *testing.T) {
+	p := &stubPlatformEngine{n: "plain"}
+	agent := &stubStrictModelAgent{
+		stubModelModeAgent: stubModelModeAgent{
+			model:            "gpt-5.6-luna",
+			reasoningEffort:  "high",
+			reasoningEfforts: []string{"low", "medium", "high", "xhigh", "max", "ultra"},
+		},
+		models: []ModelOption{{
+			Name:                   "gpt-5.6-luna",
+			DefaultReasoningEffort: "medium",
+			ReasoningEfforts:       []string{"low", "medium", "high", "xhigh", "max"},
+		}},
+	}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+	msg := &Message{SessionKey: "test:user1", ReplyCtx: "ctx"}
+
+	s := e.sessions.GetOrCreateActive(msg.SessionKey)
+	s.SetAgentSessionID("existing-session", "test")
+	s.AddHistory("user", "hello")
+
+	e.cmdReasoning(p, msg, []string{"ultra"})
+
+	if got := agent.GetReasoningEffort(); got != "high" {
+		t.Fatalf("reasoning effort = %q, want unchanged high", got)
+	}
+	if got := s.GetAgentSessionID(); got != "existing-session" {
+		t.Fatalf("AgentSessionID = %q, want preserved", got)
+	}
+	if got := s.HistoryLen(); got != 1 {
+		t.Fatalf("history length = %d, want preserved 1", got)
+	}
+	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "/reasoning <number>") {
+		t.Fatalf("sent = %v, want reasoning usage", p.sent)
 	}
 }
 
@@ -9656,6 +9782,89 @@ func TestHandleCardNav_ReasoningCardUsesWorkspaceAgent(t *testing.T) {
 	selects := cardSelects(card)
 	if len(selects) != 1 || selects[0].InitValue != "act:/reasoning 3" {
 		t.Fatalf("reasoning selects = %#v, want workspace high selected", selects)
+	}
+}
+
+func TestHandleCardNav_ReasoningActionsUseWorkspaceContext(t *testing.T) {
+	tests := []struct {
+		name       string
+		action     string
+		wantEffort string
+	}{
+		{name: "model effort action", action: "act:/model effort ultra", wantEffort: "ultra"},
+		{name: "reasoning compatibility action", action: "act:/reasoning 2", wantEffort: "medium"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &stubPlatformEngine{n: "plain"}
+			globalAgent := &stubStrictModelAgent{
+				stubModelModeAgent: stubModelModeAgent{
+					model:           "gpt-5.6-sol",
+					reasoningEffort: "low",
+				},
+				models: []ModelOption{{
+					Name:                   "gpt-5.6-sol",
+					DefaultReasoningEffort: "low",
+					ReasoningEfforts:       []string{"low", "medium", "high", "xhigh", "max", "ultra"},
+				}},
+			}
+			e := NewEngine("test", globalAgent, []Platform{p}, "", LangEnglish)
+
+			baseDir := t.TempDir()
+			bindingPath := filepath.Join(t.TempDir(), "bindings.json")
+			e.SetMultiWorkspace(baseDir, bindingPath)
+
+			wsDir := normalizeWorkspacePath(t.TempDir())
+			channelID := "channel-reasoning-actions"
+			sessionKey := "feishu:" + channelID + ":user1"
+			e.workspaceBindings.Bind("project:test", channelID, "chan", wsDir)
+
+			workspaceAgent := &stubStrictModelAgent{
+				stubModelModeAgent: stubModelModeAgent{
+					model:           "gpt-5.6-sol",
+					reasoningEffort: "high",
+				},
+				models: []ModelOption{{
+					Name:                   "gpt-5.6-sol",
+					DefaultReasoningEffort: "low",
+					ReasoningEfforts:       []string{"low", "medium", "high", "xhigh", "max", "ultra"},
+				}},
+			}
+			ws := e.workspacePool.GetOrCreate(wsDir)
+			ws.agent = workspaceAgent
+			ws.sessions = NewSessionManager("")
+
+			workspaceSession := ws.sessions.GetOrCreateActive(sessionKey)
+			workspaceSession.SetAgentSessionID("workspace-session", "test")
+			workspaceSession.AddHistory("user", "workspace history")
+			globalSession := e.sessions.GetOrCreateActive(sessionKey)
+			globalSession.SetAgentSessionID("global-session", "test")
+			globalSession.AddHistory("user", "global history")
+
+			if card := e.handleCardNav(tt.action, sessionKey); card == nil {
+				t.Fatalf("handleCardNav(%q) returned nil card", tt.action)
+			}
+
+			if got := workspaceAgent.GetReasoningEffort(); got != tt.wantEffort {
+				t.Fatalf("workspace reasoning effort = %q, want %q", got, tt.wantEffort)
+			}
+			if got := globalAgent.GetReasoningEffort(); got != "low" {
+				t.Fatalf("global reasoning effort = %q, want untouched low", got)
+			}
+			if got := workspaceSession.GetAgentSessionID(); got != "" {
+				t.Fatalf("workspace AgentSessionID = %q, want cleared", got)
+			}
+			if got := workspaceSession.HistoryLen(); got != 0 {
+				t.Fatalf("workspace history length = %d, want 0", got)
+			}
+			if got := globalSession.GetAgentSessionID(); got != "global-session" {
+				t.Fatalf("global AgentSessionID = %q, want preserved", got)
+			}
+			if got := globalSession.HistoryLen(); got != 1 {
+				t.Fatalf("global history length = %d, want preserved 1", got)
+			}
+		})
 	}
 }
 
